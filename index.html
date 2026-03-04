@@ -869,6 +869,7 @@ fetch("six_letter_words.txt")
   });
 const ALL_WORDS  = _GAME_STR.split(',');         // 583 daily/random words
 
+
 /* ══════════════════════════════════════════════════════════════════
    DATE UTILITIES
 ══════════════════════════════════════════════════════════════════ */
@@ -885,9 +886,18 @@ function dayIndex(key) {
   return Math.floor((d - EPOCH) / 86400000);
 }
 
+function seededRandom(seed) {
+  const a = 1664525;
+  const c = 1013904223;
+  const m = 2 ** 32;
+  seed = (a * seed + c) % m;
+  return seed / m;
+}
+
 function wordForDay(key) {
   const idx = dayIndex(key);
-  return ALL_WORDS[((idx % ALL_WORDS.length) + ALL_WORDS.length) % ALL_WORDS.length];
+  const randomIndex = Math.floor(seededRandom(idx) * ALL_WORDS.length);
+  return ALL_WORDS[randomIndex];
 }
 
 function formatDateDisplay(key) {
@@ -986,28 +996,6 @@ function recordResult(dayKey, won, numAttempts) {
   saveStats(s);
 }
 
-// ── Archive state storage ──
-function saveArchiveState(dayKey, archiveState) {
-    localStorage.setItem(`archive_${dayKey}`, JSON.stringify(archiveState));
-}
-
-function loadArchiveState(dayKey) {
-    const saved = localStorage.getItem(`archive_${dayKey}`);
-    return saved ? JSON.parse(saved) : null;
-}
-
-function loadAllArchiveState() {
-    const allArchive = {};
-    // Loop through localStorage keys
-    for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key.startsWith('archive_')) {
-            const dayKey = key.replace('archive_', '');
-            allArchive[dayKey] = loadArchiveState(dayKey);
-        }
-    }
-    return allArchive;
-}
 /* ══════════════════════════════════════════════════════════════════
    WORD VALIDATION
 ══════════════════════════════════════════════════════════════════ */
@@ -1162,25 +1150,19 @@ function buildArchiveGrid() {
 }
 
 function startArchiveDay(key) {
-    const saved = loadArchiveState(key);
-      if (saved) {
-        state = saved;                  // restore previous guesses/colors
-        state.activeDayKey = key;       // make sure the active key is set
-        setInputEnabled(!state.gameOver);
-    } else {
-        state.activeDayKey = key;
-        state.targetWord   = wordForDay(key);
-        state.currentRow   = 0;
-        state.gameOver     = false;
-        state.shareResult  = [];
-        setInputEnabled(true);
-    }
+  state.activeDayKey = key;
+  state.targetWord   = wordForDay(key);
+  state.currentRow   = 0;
+  state.gameOver     = false;
+  state.shareResult  = null;
 
-    buildGrid();                 // draw the grid
-    renderScramble(state.targetWord);
-    setMessage('');
-    updateAttempts();
-    document.getElementById('guessInput').value = '';
+  buildGrid();
+  renderScramble(state.targetWord);
+  setMessage('');
+  updateAttempts();
+  setInputEnabled(true);
+  updateDailyInfo();
+  document.getElementById('guessInput').value = '';
 
   // Highlight selected
   document.querySelectorAll('.archive-day-btn').forEach(b => {
@@ -1188,17 +1170,10 @@ function startArchiveDay(key) {
   });
 
   // If already completed, show result
-      if (saved && saved.shareResult && saved.shareResult.length > 0) {
-        saved.shareResult.forEach((emojiRow, rowIdx) => {
-            for (let c = 0; c < 6; c++) {
-                const cell = document.getElementById(`cell-${rowIdx}-${c}`);
-                cell.textContent = saved.targetWord[c]; // optionally you can store the actual letters
-                cell.classList.add('correct');         // mark cells as correct for display
-            }
-        });
-    }
-     // Update mini-grid for archive calendar
-    updateArchiveMiniGrid();
+  const s = loadStats();
+  if (s.completedDays[key]) {
+    restoreCompletedMessage(key, s.completedDays[key]);
+  }
 }
 
 function restoreCompletedMessage(key, rec) {
@@ -1210,7 +1185,6 @@ function restoreCompletedMessage(key, rec) {
   setInputEnabled(false);
   state.gameOver = true;
 }
-
 
 /* ══════════════════════════════════════════════════════════════════
    RESTORE DAILY GAME (from localStorage)
@@ -1331,10 +1305,6 @@ function submitGuess() {
   const input = document.getElementById('guessInput');
   const guess = input.value.trim().toUpperCase();
 
-  console.log("Guess submitted:", guess);
-  console.log("Target word:", state.targetWord);
-
-
   /* ── Basic length/format check ── */
   if (guess.length !== 6 || !/^[A-Z]{6}$/.test(guess)) {
     setMessage('Enter exactly 6 letters!', 'error-msg');
@@ -1355,9 +1325,6 @@ function submitGuess() {
   const statuses  = evaluateGuess(guess);
   const emojiRow  = statuses.map(s => s === 'correct' ? '🟩' : '⬛').join('');
   const rowIdx    = state.currentRow;
-  const isCorrect = statuses.every(s => s === 'correct');
-  const isDaily   = state.mode === 'daily';
-  const isArchive = state.mode === 'archive';
 
   /* ── Reveal row cells ── */
   for (let c = 0; c < 6; c++) {
@@ -1373,18 +1340,9 @@ function submitGuess() {
   updateAttempts();
   input.value = '';
 
-  if (isArchive) {
-    const archiveSave = {
-        targetWord: state.targetWord,
-        currentRow: state.currentRow,
-        gameOver: isCorrect || state.currentRow >= 5,
-        shareResult: state.shareResult,
-        mode: state.mode,
-        activeDayKey: state.activeDayKey
-    };
-    saveArchiveState(state.activeDayKey, archiveSave);
-    updateArchiveMiniGrid(); // mark the mini-grid square green
-}
+  const isCorrect = statuses.every(s => s === 'correct');
+  const isDaily   = state.mode === 'daily';
+  const isArchive = state.mode === 'archive';
 
   /* ── Persist daily progress after every guess ── */
   if (isDaily) {
@@ -1401,23 +1359,23 @@ function submitGuess() {
 
   setTimeout(() => {
     if (isCorrect) {
-      setMessage(`🎉 Correct! Solved in ${state.currentRow} ${state.currentRow === 1 ? 'try' : 'tries'}`, 'correct-Fmsg');
+      setMessage(`🎉 Correct! Solved in ${state.currentRow} ${state.currentRow === 1 ? 'try' : 'tries'}`, 'correct-msg');
       state.gameOver = true;
       setInputEnabled(false);
-      if (isDaily) {
+      if (isDaily || isArchive) {
         recordResult(state.activeDayKey, true, state.currentRow);
+        if (isArchive) buildArchiveGrid();
         setTimeout(() => openStats(), 1400);
       }
-      if (isArchive) buildArchiveGrid();
     } else if (state.currentRow >= 5) {
       setMessage(`Game Over — The word was "${state.targetWord}"`, 'gameover-msg');
       state.gameOver = true;
       setInputEnabled(false);
-      if (isDaily) {
+      if (isDaily || isArchive) {
         recordResult(state.activeDayKey, false, state.currentRow);
+        if (isArchive) buildArchiveGrid();
         setTimeout(() => openStats(), 1400);
       }
-       if (isArchive) buildArchiveGrid();
     }
   }, 700);
 }
@@ -1506,18 +1464,6 @@ function startCountdown() {
   };
   tick();
   _cdTimer = setInterval(tick, 1000);
-}
-
-function updateArchiveMiniGrid() {
-    const savedArchive = loadAllArchiveState(); // object with all saved archive days
-    document.querySelectorAll('.archive-day-btn').forEach(btn => {
-        const key = btn.dataset.key;
-        if (savedArchive[key] && savedArchive[key].gameOver) {
-            btn.classList.add('completed'); // green square
-        } else {
-            btn.classList.remove('completed');
-        }
-    });
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1609,30 +1555,6 @@ document.addEventListener('keydown', e => {
     document.getElementById('helpOverlay').classList.add('hidden');
     stopCountdown();
   }
-});
-
-// Mode buttons
-document.querySelectorAll('.mode-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        // Remove "active" from all, add to clicked
-        document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-
-        const mode = btn.dataset.mode;
-        state.mode = mode;
-
-        // Show/hide panels
-        document.getElementById('archivePanel').style.display = (mode === 'archive') ? 'block' : 'none';
-        // You may also show/hide other panels as needed for daily/random
-
-        // If archive, refresh mini-grid immediately
-        if (mode === 'archive') {
-            buildArchiveGrid();
-            updateArchiveMiniGrid();  // this marks completed days green
-        }
-
-        // Reset or rebuild other UI parts as needed
-    });
 });
 
 /* ══════════════════════════════════════════════════════════════════
